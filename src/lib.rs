@@ -9,15 +9,62 @@ use std::marker::{PhantomData};
 use std::sync::{Arc, Barrier, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub trait SharedAllreduce<T, R> where R: ReduceKernel {
+pub trait MemAllreduce<T, R> where R: MemReduceKernel<T> {
   fn allreduce(&self, in_buf: &[T], out_buf: &mut [T]);
 }
 
-pub trait ReduceKernel {
+pub trait MemMultiAllreduce<T, R> where R: MemReduceKernel<T> {
+  fn multi_allreduce(&self, in_buf: Vec<&[T]>, out_buf: Vec<&mut [T]>);
+}
+
+pub trait MemReduceKernel<T> {
+  fn inc_reduce(idx: usize, src_buf: &[T], dst_buf: &mut [T]);
+  fn commutative() -> bool { false }
+  fn post_reduce(_count: usize, _buf: &mut [T]) {}
 }
 
 pub struct SumReduce;
-impl ReduceKernel for SumReduce {}
+
+impl MemReduceKernel<f32> for SumReduce {
+  fn inc_reduce(_idx: usize, src_buf: &[f32], dst_buf: &mut [f32]) {
+    dst_buf.flatten_mut().add(1.0, src_buf.flatten());
+  }
+
+  fn commutative() -> bool { true }
+}
+
+pub struct MeanReduce;
+
+impl MemReduceKernel<f32> for MeanReduce {
+  fn inc_reduce(idx: usize, src_buf: &[f32], dst_buf: &mut [f32]) {
+    let n = (idx + 1) as f32;
+    dst_buf.flatten_mut().average(1.0 / n, src_buf.flatten());
+  }
+}
+
+pub struct Stats2Reduce;
+
+impl MemReduceKernel<f32> for Stats2Reduce {
+  fn inc_reduce(idx: usize, src_buf: &[f32], dst_buf: &mut [f32]) {
+    unimplemented!();
+  }
+
+  fn post_reduce(count: usize, buf: &mut [f32]) {
+    unimplemented!();
+  }
+}
+
+pub struct Stats4Reduce;
+
+impl MemReduceKernel<f32> for Stats4Reduce {
+  fn inc_reduce(idx: usize, src_buf: &[f32], dst_buf: &mut [f32]) {
+    unimplemented!();
+  }
+
+  fn post_reduce(count: usize, buf: &mut [f32]) {
+    unimplemented!();
+  }
+}
 
 pub struct SharedRingAllreduceState<T> {
   barrier:  Arc<SpinBarrier>,
@@ -53,7 +100,7 @@ impl<T> SharedRingAllreduceBuilder<T> {
 }
 
 impl<T> SharedRingAllreduceBuilder<T> where T: Clone + Default {
-  pub fn into_worker<R>(self, worker_rank: usize, buf_sz: usize) -> SharedRingAllreduceWorker<T, R> where R: ReduceKernel {
+  pub fn into_worker<R>(self, worker_rank: usize, buf_sz: usize) -> SharedRingAllreduceWorker<T, R> where R: MemReduceKernel<T> {
     assert!(worker_rank < self.num_workers);
     let prev_buf_sz = self.state.buf_sz.compare_and_swap(0, buf_sz, Ordering::SeqCst);
     assert!(prev_buf_sz == 0 || prev_buf_sz == buf_sz);
@@ -78,7 +125,7 @@ impl<T> SharedRingAllreduceBuilder<T> where T: Clone + Default {
   }
 }
 
-pub struct SharedRingAllreduceWorker<T, R> where R: ReduceKernel {
+pub struct SharedRingAllreduceWorker<T, R> where R: MemReduceKernel<T> {
   worker_rank:  usize,
   num_workers:  usize,
   buf_sz:       usize,
@@ -86,8 +133,8 @@ pub struct SharedRingAllreduceWorker<T, R> where R: ReduceKernel {
   _marker:  PhantomData<R>,
 }
 
-impl SharedAllreduce<f32, SumReduce> for SharedRingAllreduceWorker<f32, SumReduce> {
-  fn allreduce(&self, in_buf: &[f32], out_buf: &mut [f32]) {
+impl<T, R> MemAllreduce<T, R> for SharedRingAllreduceWorker<T, R> where T: Copy, R: MemReduceKernel<T> {
+  fn allreduce(&self, in_buf: &[T], out_buf: &mut [T]) {
     assert_eq!(self.buf_sz, in_buf.len());
     assert_eq!(self.buf_sz, out_buf.len());
 
@@ -111,7 +158,15 @@ impl SharedAllreduce<f32, SumReduce> for SharedRingAllreduceWorker<f32, SumReduc
       let mut dst_part = self.state.parts[dst_rank][dst_rank].lock().unwrap();
       let &(_, ref src_buf) = &*src_part.as_ref().unwrap();
       let &mut (_, ref mut dst_buf) = &mut *dst_part.as_mut().unwrap();
-      dst_buf.flatten_mut().add(1.0, src_buf.flatten());
+      R::inc_reduce(p + 1, src_buf, dst_buf);
+      if !R::commutative() {
+        self.state.barrier.wait();
+      }
+    }
+    if !R::commutative() {
+      let mut part = self.state.parts[self.worker_rank][self.worker_rank].lock().unwrap();
+      let &mut (_, ref mut buf) = &mut *part.as_mut().unwrap();
+      R::post_reduce(self.num_workers, buf);
     }
     self.state.barrier.wait();
 
