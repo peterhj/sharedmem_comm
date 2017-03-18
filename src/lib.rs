@@ -14,23 +14,30 @@ pub trait MemAllreduce<T, R> where R: MemReduceKernel<T> {
 }
 
 pub trait MemMultiAllreduce<T, R> where R: MemReduceKernel<T> {
-  fn multi_allreduce(&self, in_buf: Vec<&[T]>, out_buf: Vec<&mut [T]>);
+  fn multi_allreduce(&self, in_bufs: Vec<&[T]>, out_bufs: Vec<&mut [T]>);
 }
 
 pub trait MemReduceKernel<T> {
-  fn inc_reduce(idx: usize, src_buf: &[T], dst_buf: &mut [T]);
   fn commutative() -> bool { false }
+  fn inc_reduce(idx: usize, src_buf: &[T], dst_buf: &mut [T]);
   fn post_reduce(_count: usize, _buf: &mut [T]) {}
+}
+
+pub trait MemMultiReduceKernel<T> {
+  fn commutative() -> bool { false }
+  fn check_num_bufs(src_nbufs: usize, dst_nbufs: usize) -> bool;
+  fn inc_reduce(idx: usize, src_bufs: Vec<&[T]>, dst_bufs: Vec<&mut [T]>);
+  fn post_reduce(_count: usize, _bufs: Vec<&mut [T]>) {}
 }
 
 pub struct SumReduce;
 
 impl MemReduceKernel<f32> for SumReduce {
+  fn commutative() -> bool { true }
+
   fn inc_reduce(_idx: usize, src_buf: &[f32], dst_buf: &mut [f32]) {
     dst_buf.flatten_mut().add(1.0, src_buf.flatten());
   }
-
-  fn commutative() -> bool { true }
 }
 
 pub struct MeanReduce;
@@ -44,24 +51,34 @@ impl MemReduceKernel<f32> for MeanReduce {
 
 pub struct Stats2Reduce;
 
-impl MemReduceKernel<f32> for Stats2Reduce {
-  fn inc_reduce(idx: usize, src_buf: &[f32], dst_buf: &mut [f32]) {
+impl MemMultiReduceKernel<f32> for Stats2Reduce {
+  fn check_num_bufs(src_nbufs: usize, dst_nbufs: usize) -> bool {
+    src_nbufs == 1 && dst_nbufs == 2
+  }
+
+  fn inc_reduce(idx: usize, src_bufs: Vec<&[f32]>, dst_bufs: Vec<&mut [f32]>) {
+    let n = (idx + 1) as f32;
     unimplemented!();
   }
 
-  fn post_reduce(count: usize, buf: &mut [f32]) {
+  fn post_reduce(count: usize, bufs: Vec<&mut [f32]>) {
     unimplemented!();
   }
 }
 
 pub struct Stats4Reduce;
 
-impl MemReduceKernel<f32> for Stats4Reduce {
-  fn inc_reduce(idx: usize, src_buf: &[f32], dst_buf: &mut [f32]) {
+impl MemMultiReduceKernel<f32> for Stats4Reduce {
+  fn check_num_bufs(src_nbufs: usize, dst_nbufs: usize) -> bool {
+    src_nbufs == 1 && dst_nbufs == 4
+  }
+
+  fn inc_reduce(idx: usize, src_bufs: Vec<&[f32]>, dst_bufs: Vec<&mut [f32]>) {
+    let n = (idx + 1) as f32;
     unimplemented!();
   }
 
-  fn post_reduce(count: usize, buf: &mut [f32]) {
+  fn post_reduce(count: usize, bufs: Vec<&mut [f32]>) {
     unimplemented!();
   }
 }
